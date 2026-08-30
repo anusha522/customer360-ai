@@ -278,16 +278,23 @@ def render():
         """, unsafe_allow_html=True)
 
         transcripts = None
-        intelligence = None
         try:
             transcripts = get_customer_transcripts(customer_id)
         except Exception:
             pass
 
+        ti_key = f"ti_result_{customer_id}"
+        intelligence = st.session_state.get(ti_key)
+
         if st.button("Analyze Transcripts with Cortex AI", key=f"ti_{customer_id}"):
             with st.spinner("Running Cortex AI transcript analysis..."):
                 try:
-                    intelligence = call_transcript_intelligence(customer_id)
+                    result = call_transcript_intelligence(customer_id)
+                    if result:
+                        st.session_state[ti_key] = result
+                        intelligence = result
+                    else:
+                        st.warning("No transcript analysis generated. Please try again.")
                 except Exception as e:
                     st.error(f"Transcript analysis error: {str(e)[:200]}")
 
@@ -310,23 +317,30 @@ def render():
         </div>
         """, unsafe_allow_html=True)
 
+        ai_key = f"ai_result_{customer_id}"
+        summary = st.session_state.get(ai_key)
+
         if st.button("Generate AI Summary", key=f"ai_{customer_id}"):
             with st.spinner("Generating AI summary using Cortex COMPLETE..."):
                 try:
-                    summary = call_customer_ai_summary(customer_id)
-                    if summary:
-                        st.markdown(f"""
-                        <div style="background:#f0f4ff;border:1px solid #d0d8f0;border-radius:8px;
-                                    padding:4px 12px;margin-bottom:8px;">
-                            <span style="font-size:0.75em;color:#3498db;font-weight:600;">
-                                AI-Generated Content &nbsp;|&nbsp; Based on Snowflake customer data and interaction evidence</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.markdown(summary)
+                    result = call_customer_ai_summary(customer_id)
+                    if result:
+                        st.session_state[ai_key] = result
+                        summary = result
                     else:
                         st.warning("Could not generate summary.")
                 except Exception as e:
                     st.error(f"AI summary error: {str(e)[:200]}")
+
+        if summary:
+            st.markdown(f"""
+            <div style="background:#f0f4ff;border:1px solid #d0d8f0;border-radius:8px;
+                        padding:4px 12px;margin-bottom:8px;">
+                <span style="font-size:0.75em;color:#3498db;font-weight:600;">
+                    AI-Generated Content &nbsp;|&nbsp; Based on Snowflake customer data and interaction evidence</span>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown(summary)
         else:
             st.info("Click the button above to generate an AI-powered relationship summary.")
 

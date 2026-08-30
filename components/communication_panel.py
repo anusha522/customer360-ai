@@ -25,22 +25,29 @@ def render_communication_panel(customer_id: str):
         (tab_sms, "sms", "SMS"),
     ]:
         with tab:
+            comm_key = f"comm_{channel}_{customer_id}"
+            result = st.session_state.get(comm_key)
+
             btn_key = f"gen_{channel}_{customer_id}"
             if st.button(f"Generate {label}", key=btn_key):
                 with st.spinner(f"Generating {label.lower()} using Cortex AI..."):
                     try:
-                        result = call_generate_communication(customer_id, channel)
-                        if result:
-                            st.markdown(f"""
-                            <div style="background:#fffef5;border:1px solid #f0e6c0;border-radius:6px;
-                                        padding:12px 16px;margin-top:8px;">
-                                <div style="font-size:0.7em;color:#b8860b;text-transform:uppercase;
-                                            margin-bottom:8px;">
-                                    \u26a0\ufe0f AI-Generated Draft — Review Before Sending</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            st.markdown(result)
+                        gen = call_generate_communication(customer_id, channel)
+                        if gen:
+                            st.session_state[comm_key] = gen
+                            result = gen
                         else:
                             st.warning("No communication generated. Please try again.")
                     except Exception as e:
                         st.error(f"Error generating communication: {str(e)[:200]}")
+
+            if result:
+                st.markdown(f"""
+                <div style="background:#fffef5;border:1px solid #f0e6c0;border-radius:6px;
+                            padding:12px 16px;margin-top:8px;">
+                    <div style="font-size:0.7em;color:#b8860b;text-transform:uppercase;
+                                margin-bottom:8px;">
+                        \u26a0\ufe0f AI-Generated Draft — Review Before Sending</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.markdown(result)

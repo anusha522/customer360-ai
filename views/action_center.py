@@ -114,4 +114,5 @@ def render():
             if st.button("Open Customer 360", type="primary"):
                 st.session_state["selected_customer_id"] = cid
                 st.session_state["current_page"] = "Customer 360"
+                st.session_state["_nav_sync"] = "Customer 360"
                 st.rerun()

@@ -32,15 +32,29 @@ def get_connection():
     return st.connection("snowflake", type="snowflake").raw_connection
 
 
+def _escape(val):
+    """Escape a string value for safe SQL interpolation."""
+    if val is None:
+        return "NULL"
+    return "'" + str(val).replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _bind(sql: str, params) -> str:
+    """Replace %s placeholders with escaped parameter values."""
+    if not params:
+        return sql
+    if isinstance(params, (list, tuple)):
+        for p in params:
+            sql = sql.replace("%s", _escape(p), 1)
+    return sql
+
+
 def run_query(sql: str, params=None) -> pd.DataFrame:
     """Execute a SQL query and return a DataFrame."""
     conn = get_connection()
     try:
         cur = conn.cursor()
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
+        cur.execute(_bind(sql, params))
         cols = [desc[0] for desc in cur.description]
         rows = cur.fetchall()
         return pd.DataFrame(rows, columns=cols)
@@ -53,10 +67,7 @@ def run_scalar(sql: str, params=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
+        cur.execute(_bind(sql, params))
         row = cur.fetchone()
         return row[0] if row else None
     finally:
@@ -243,6 +254,85 @@ def call_ask_customer_360(question: str, customer_id: str = None) -> str:
         return run_scalar(f"""
             SELECT {DB}.{SCHEMA}.FN_ASK_CUSTOMER_360(%s, NULL)
         """, (question,))
+
+
+import re
+
+# Pattern to detect CUST-xxxx IDs in free text
+_CUST_ID_RE = re.compile(r'\bCUST-\d{3,}\b', re.IGNORECASE)
+
+# Words that signal an aggregate/portfolio question (not about a specific person)
+_AGGREGATE_SIGNALS = [
+    "which customers", "what customers", "how many customers", "all customers",
+    "top customers", "highest risk", "most at risk", "portfolio", "across all",
+    "total", "overall", "summary of all", "list all", "show all", "everyone",
+]
+
+# Patterns that indicate the question is about a specific person (not aggregate)
+_PERSON_QUERY_RE = re.compile(
+    r'\b(?:why is|tell me about|about|is|for)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b'
+)
+
+
+def resolve_customer_from_question(question: str) -> dict:
+    """Attempt to identify a customer from the question text.
+
+    Returns dict with:
+      - status: "id_match" | "exact_match" | "ambiguous" | "no_match" | "aggregate"
+      - customer_id: str or None
+      - matches: DataFrame of matching customers (for ambiguous)
+    """
+    q_lower = question.lower()
+
+    # Check for aggregate question signals first
+    for signal in _AGGREGATE_SIGNALS:
+        if signal in q_lower:
+            return {"status": "aggregate", "customer_id": None, "matches": None}
+
+    # Check for explicit CUST-xxxx ID in the question
+    id_match = _CUST_ID_RE.search(question)
+    if id_match:
+        cid = id_match.group(0).upper()
+        verify = run_query(f"""
+            SELECT CUSTOMER_ID, FULL_NAME FROM {DB}.{SCHEMA}.CUSTOMER_360_VIEW
+            WHERE CUSTOMER_ID = %s
+        """, (cid,))
+        if len(verify) > 0:
+            return {"status": "id_match", "customer_id": cid, "matches": verify}
+        return {"status": "no_match", "customer_id": None, "matches": None}
+
+    # Extract potential name tokens from the question
+    # Get the customer list to match against
+    cust_df = get_customer_list()
+
+    # Try exact full-name match (case-insensitive)
+    for _, row in cust_df.iterrows():
+        if row["FULL_NAME"].lower() in q_lower:
+            exact = cust_df[cust_df["FULL_NAME"].str.lower() == row["FULL_NAME"].lower()]
+            if len(exact) == 1:
+                return {"status": "exact_match", "customer_id": exact.iloc[0]["CUSTOMER_ID"], "matches": exact}
+            else:
+                # Multiple customers with same full name
+                return {"status": "ambiguous", "customer_id": None, "matches": exact}
+
+    # Try first-name match (case-insensitive)
+    first_names = cust_df.copy()
+    first_names["FIRST_NAME"] = first_names["FULL_NAME"].str.split(" ").str[0]
+    for fn in first_names["FIRST_NAME"].unique():
+        if fn.lower() in q_lower.split():
+            matches = first_names[first_names["FIRST_NAME"].str.lower() == fn.lower()]
+            if len(matches) == 1:
+                return {"status": "exact_match", "customer_id": matches.iloc[0]["CUSTOMER_ID"], "matches": matches}
+            else:
+                return {"status": "ambiguous", "customer_id": None, "matches": matches}
+
+    # No customer name detected in the database.
+    # If the question looks like it's asking about a specific person, return no_match.
+    # If it looks like a general/aggregate question, treat as aggregate.
+    person_match = _PERSON_QUERY_RE.search(question)
+    if person_match:
+        return {"status": "no_match", "customer_id": None, "matches": None}
+    return {"status": "aggregate", "customer_id": None, "matches": None}
 
 
 @st.cache_data(ttl=300)

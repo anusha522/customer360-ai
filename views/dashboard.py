@@ -155,7 +155,7 @@ def render():
                                   "Main Issue", "Recommended Action", "Priority"]
             display_df["Main Issue"] = display_df["Main Issue"].str.replace("_", " ").str.title()
 
-            st.dataframe(display_df, hide_index=True)
+            st.dataframe(display_df)
 
             st.markdown("")
             cols = st.columns([2, 1])
@@ -173,6 +173,7 @@ def render():
                         cid = sel.split(" — ")[0].strip()
                         st.session_state["selected_customer_id"] = cid
                         st.session_state["current_page"] = "Customer 360"
+                        st.session_state["_nav_sync"] = "Customer 360"
                         st.rerun()
         else:
             st.success("No HIGH priority actions required at this time.")

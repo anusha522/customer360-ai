@@ -1,6 +1,8 @@
 """Page 3: Ask Customer 360 — AI decision-support interface."""
 import streamlit as st
-from utils.snowflake import call_ask_customer_360, get_customer_list
+from utils.snowflake import (
+    call_ask_customer_360, get_customer_list, resolve_customer_from_question,
+)
 
 
 EXAMPLE_QUESTIONS = [
@@ -13,6 +15,19 @@ EXAMPLE_QUESTIONS = [
     "Which customers have an open claim and a renewal coming up?",
     "Summarize this customer's relationship with us.",
 ]
+
+
+def _render_disambiguation(matches, question):
+    """Render a disambiguation UI when multiple customers match the question."""
+    st.warning(f"Multiple customers match your question. Please select one:")
+    for _, row in matches.iterrows():
+        label = (f"{row['FULL_NAME']} — {row['CUSTOMER_ID']} — "
+                 f"{row['CHURN_RISK_CATEGORY']} risk — {int(row['CHURN_RISK_SCORE'])}/100")
+        if st.button(label, key=f"disambig_{row['CUSTOMER_ID']}", use_container_width=True):
+            st.session_state["_disambig_cust"] = row["CUSTOMER_ID"]
+            st.session_state["_disambig_question"] = question
+            st.session_state["_auto_submit"] = True
+            st.rerun()
 
 
 def render():
@@ -44,13 +59,25 @@ def render():
             except Exception:
                 selected_cust = st.text_input("Customer ID", key="ask_cust_id")
 
-    # ── Question input ──
+    # ── Pre-fill from example button (BEFORE widget renders) ──
+    if "_selected_example" in st.session_state:
+        st.session_state["ask_question"] = st.session_state.pop("_selected_example")
+        st.session_state["_auto_submit"] = True
+
+    # ── Pre-fill from disambiguation selection ──
+    disambig_cust = st.session_state.pop("_disambig_cust", None)
+    disambig_question = st.session_state.pop("_disambig_question", None)
+    if disambig_cust and disambig_question:
+        selected_cust = disambig_cust
+        st.session_state["ask_question"] = disambig_question
+
+    # ── Question input (with key so value persists across reruns) ──
     question = st.text_area(
         "Your question",
         height=80,
-        key="ask_question",
         placeholder="e.g., Why is this customer likely to churn and what should we do?",
         label_visibility="collapsed",
+        key="ask_question",
     )
 
     st.markdown("**Try these:**")
@@ -58,38 +85,73 @@ def render():
     for i, ex in enumerate(EXAMPLE_QUESTIONS):
         with cols[i % 4]:
             if st.button(ex, key=f"ex_{i}", use_container_width=True):
-                st.session_state["ask_question"] = ex
+                st.session_state["_selected_example"] = ex
                 st.rerun()
 
-    st.markdown("")
-    if st.button("Get Answer", type="primary", use_container_width=True):
+    # ── Submit: either button click or auto-submit from example/disambiguation ──
+    auto = st.session_state.pop("_auto_submit", False)
+    clicked = st.button("Get Answer", type="primary", use_container_width=True)
+
+    # ── Generate answer on submit ──
+    if clicked or auto:
         if not question or not question.strip():
             st.warning("Please enter a question.")
-            return
+        else:
+            q = question.strip()
 
-        scope_label = f"Customer: {selected_cust}" if selected_cust else "All Customers (Top 15)"
+            # ── Customer disambiguation (only when no customer explicitly selected) ──
+            if not selected_cust:
+                resolution = resolve_customer_from_question(q)
 
-        st.markdown(f"""
-        <div style="background:#f8f9fa;border-radius:6px;padding:8px 12px;margin:8px 0;font-size:0.85em;">
-            <strong>Scope:</strong> {scope_label} &nbsp;|&nbsp;
-            <strong>Engine:</strong> Cortex COMPLETE (llama3.1-70b) + Snowflake Data
-        </div>
-        """, unsafe_allow_html=True)
+                if resolution["status"] == "id_match":
+                    selected_cust = resolution["customer_id"]
+                elif resolution["status"] == "exact_match":
+                    selected_cust = resolution["customer_id"]
+                elif resolution["status"] == "ambiguous":
+                    _render_disambiguation(resolution["matches"].head(10), q)
+                    return
+                elif resolution["status"] == "no_match":
+                    st.error("No customer matching that name was found. Please select a customer from the dropdown or provide a Customer ID (e.g. CUST-0340).")
+                    return
+                # "aggregate" → selected_cust stays None, handled normally
 
-        with st.spinner("Querying Snowflake data and generating AI answer..."):
-            try:
-                answer = call_ask_customer_360(question.strip(), selected_cust)
-            except Exception as e:
-                st.error(f"Error: {str(e)[:300]}")
-                return
+            scope_label = f"Customer: {selected_cust}" if selected_cust else "All Customers (Top 15)"
+            st.markdown(f"""
+            <div style="background:#f8f9fa;border-radius:6px;padding:8px 12px;margin:8px 0;font-size:0.85em;">
+                <strong>Scope:</strong> {scope_label} &nbsp;|&nbsp;
+                <strong>Engine:</strong> Cortex COMPLETE (llama3.1-70b) + Snowflake Data
+            </div>
+            """, unsafe_allow_html=True)
 
-        if not answer:
-            st.warning("No answer generated. Try rephrasing the question or selecting a customer.")
-            return
+            with st.spinner("Querying Snowflake data and generating AI answer..."):
+                try:
+                    answer = call_ask_customer_360(q, selected_cust)
+                except Exception as e:
+                    st.error(f"Error: {str(e)[:300]}")
+                    answer = None
+
+            if answer:
+                st.session_state["_ask_answer"] = answer
+                st.session_state["_ask_question_text"] = q
+                st.session_state["_ask_scope"] = scope_label
+                st.session_state["_ask_cust"] = selected_cust
+            else:
+                st.warning("No answer generated. Try rephrasing the question or selecting a customer.")
+
+    # ── Display persisted disambiguation (if stored from a previous run) ──
+    disambig_data = st.session_state.get("_ask_disambig")
+    if disambig_data:
+        _render_disambiguation(disambig_data["matches"], disambig_data["question"])
+
+    # ── Display persisted answer ──
+    answer = st.session_state.get("_ask_answer")
+    if answer:
+        scope_label = st.session_state.get("_ask_scope", "")
+        asked_cust = st.session_state.get("_ask_cust")
+        asked_q = st.session_state.get("_ask_question_text", "")
 
         st.markdown("---")
 
-        # ── Answer ──
         st.markdown(f"""
         <div style="background:#f0f4ff;border:1px solid #d0d8f0;border-radius:6px;
                     padding:6px 14px;margin-bottom:12px;">
@@ -100,43 +162,54 @@ def render():
 
         st.markdown(answer)
 
-        # ── Follow-up actions ──
-        if selected_cust:
+        if asked_cust:
             st.markdown("---")
             st.markdown("##### Follow-up Actions")
             fc1, fc2, fc3 = st.columns(3)
             with fc1:
                 if st.button("View Customer 360", key="followup_c360", use_container_width=True):
-                    st.session_state["selected_customer_id"] = selected_cust
+                    st.session_state["selected_customer_id"] = asked_cust
                     st.session_state["current_page"] = "Customer 360"
+                    st.session_state["_nav_sync"] = "Customer 360"
+                    st.session_state.pop("_ask_answer", None)
                     st.rerun()
             with fc2:
+                fu_phone_key = f"fu_phone_{asked_cust}"
+                phone_result = st.session_state.get(fu_phone_key)
                 if st.button("Generate Phone Script", key="followup_phone", use_container_width=True):
                     with st.spinner("Generating with Cortex AI..."):
                         try:
                             from utils.snowflake import call_generate_communication
-                            script = call_generate_communication(selected_cust, "phone")
+                            script = call_generate_communication(asked_cust, "phone")
                             if script:
-                                st.markdown(f"""
-                                <div style="background:#fffef5;border:1px solid #f0e6c0;border-radius:6px;padding:8px 12px;margin-bottom:8px;">
-                                    <span style="font-size:0.75em;color:#b8860b;">AI-Generated Draft — Review before sending</span>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                st.markdown(script)
+                                st.session_state[fu_phone_key] = script
+                                phone_result = script
                         except Exception as e:
                             st.error(str(e)[:200])
+                if phone_result:
+                    st.markdown(f"""
+                    <div style="background:#fffef5;border:1px solid #f0e6c0;border-radius:6px;padding:8px 12px;margin-bottom:8px;">
+                        <span style="font-size:0.75em;color:#b8860b;">AI-Generated Draft — Review before sending</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.markdown(phone_result)
             with fc3:
+                fu_email_key = f"fu_email_{asked_cust}"
+                email_result = st.session_state.get(fu_email_key)
                 if st.button("Generate Email", key="followup_email", use_container_width=True):
                     with st.spinner("Generating with Cortex AI..."):
                         try:
                             from utils.snowflake import call_generate_communication
-                            email = call_generate_communication(selected_cust, "email")
+                            email = call_generate_communication(asked_cust, "email")
                             if email:
-                                st.markdown(f"""
-                                <div style="background:#fffef5;border:1px solid #f0e6c0;border-radius:6px;padding:8px 12px;margin-bottom:8px;">
-                                    <span style="font-size:0.75em;color:#b8860b;">AI-Generated Draft — Review before sending</span>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                st.markdown(email)
+                                st.session_state[fu_email_key] = email
+                                email_result = email
                         except Exception as e:
                             st.error(str(e)[:200])
+                if email_result:
+                    st.markdown(f"""
+                    <div style="background:#fffef5;border:1px solid #f0e6c0;border-radius:6px;padding:8px 12px;margin-bottom:8px;">
+                        <span style="font-size:0.75em;color:#b8860b;">AI-Generated Draft — Review before sending</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.markdown(email_result)

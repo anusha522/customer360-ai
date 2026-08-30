@@ -4,6 +4,9 @@ Main Streamlit application entry point.
 """
 import streamlit as st
 
+if not hasattr(st, 'rerun'):
+    st.rerun = st.experimental_rerun
+
 st.set_page_config(
     page_title="Customer360 AI",
     page_icon="\U0001f3af",
@@ -32,8 +35,10 @@ st.markdown("""
         color: #ffffff !important;
     }
     section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label p,
-    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label span {
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label span,
+    section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label div {
         color: #ffffff !important;
+        font-weight: 700 !important;
     }
     section[data-testid="stSidebar"] .stMarkdown h5 {
         color: #ffffff !important;
@@ -120,16 +125,24 @@ with st.sidebar:
     if "current_page" not in st.session_state:
         st.session_state["current_page"] = "Executive Dashboard"
 
+    # Sync radio key when page was changed programmatically (e.g. button navigation)
+    if st.session_state.get("_nav_sync"):
+        st.session_state["nav_radio"] = st.session_state.pop("_nav_sync")
+
     page_options = list(PAGES.keys())
-    current_idx = page_options.index(st.session_state["current_page"]) if st.session_state["current_page"] in page_options else 0
 
     selected_page = st.radio(
         "Navigation",
         page_options,
-        index=current_idx,
         format_func=lambda x: f"{PAGE_ICONS.get(x, '')} {x}",
         key="nav_radio",
     )
+
+    # Force immediate rerun when radio selection changes so page renders on first click
+    if selected_page != st.session_state.get("current_page"):
+        st.session_state["current_page"] = selected_page
+        st.rerun()
+
     st.session_state["current_page"] = selected_page
 
     st.markdown("---")
@@ -169,6 +182,7 @@ with st.sidebar:
         if st.button("\U0001f3af Load Demo", use_container_width=True):
             st.session_state["selected_customer_id"] = "CUST-0340"
             st.session_state["current_page"] = "Customer 360"
+            st.session_state["_nav_sync"] = "Customer 360"
             st.rerun()
 
         if st.session_state.get("selected_customer_id"):
