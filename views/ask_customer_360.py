@@ -70,6 +70,8 @@ def render():
     if disambig_cust and disambig_question:
         selected_cust = disambig_cust
         st.session_state["ask_question"] = disambig_question
+        # Clear disambiguation UI now that a selection was made
+        st.session_state.pop("_ask_disambig", None)
 
     # ── Question input (with key so value persists across reruns) ──
     question = st.text_area(
@@ -98,6 +100,8 @@ def render():
             st.warning("Please enter a question.")
         else:
             q = question.strip()
+            # Clear any previous disambiguation UI
+            st.session_state.pop("_ask_disambig", None)
 
             # ── Customer disambiguation (only when no customer explicitly selected) ──
             if not selected_cust:
@@ -108,6 +112,10 @@ def render():
                 elif resolution["status"] == "exact_match":
                     selected_cust = resolution["customer_id"]
                 elif resolution["status"] == "ambiguous":
+                    st.session_state["_ask_disambig"] = {
+                        "matches": resolution["matches"].head(10),
+                        "question": q,
+                    }
                     _render_disambiguation(resolution["matches"].head(10), q)
                     return
                 elif resolution["status"] == "no_match":
@@ -138,7 +146,7 @@ def render():
             else:
                 st.warning("No answer generated. Try rephrasing the question or selecting a customer.")
 
-    # ── Display persisted disambiguation (if stored from a previous run) ──
+    # ── Display persisted disambiguation (re-render buttons so clicks register) ──
     disambig_data = st.session_state.get("_ask_disambig")
     if disambig_data:
         _render_disambiguation(disambig_data["matches"], disambig_data["question"])
