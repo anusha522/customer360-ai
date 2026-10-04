@@ -1,3 +1,7 @@
-streamlit>=1.28.0
-snowflake-connector-python>=3.6.0
-pandas>=2.0.0
+# Snowflake Streamlit-in-Snowflake (SiS) environment
+# These packages are auto-provided by SiS — no pip install needed for deployment.
+# This file is for documentation and local development only.
+
+snowflake-snowpark-python
+streamlit
+pandas
